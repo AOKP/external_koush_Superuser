@@ -2,7 +2,6 @@
 # su is built here, and 
 
 my_path := $(call my-dir)
-LOCAL_PATH := $(my_path)
 
 ifdef SUPERUSER_EMBEDDED
 SUPERUSER_PACKAGE := com.android.settings
@@ -14,6 +13,7 @@ include $(my_path)/Superuser/Android.mk
 endif
 
 
+LOCAL_PATH := $(my_path)
 include $(CLEAR_VARS)
 
 LOCAL_MODULE := su
@@ -69,4 +69,5 @@ $(SUPERUSER_MARKER): $(LOCAL_INSTALLED_MODULE) $(LOCAL_PATH)/Android.mk
 
 ALL_MODULES.$(LOCAL_MODULE).INSTALLED := \
     $(ALL_MODULES.$(LOCAL_MODULE).INSTALLED) $(TARGET_ROOT_OUT)/init.superuser.rc $(TARGET_OUT_ETC)/.has_su_daemon
+
 endif

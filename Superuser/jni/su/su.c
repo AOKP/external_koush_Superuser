@@ -67,17 +67,32 @@ unsigned get_radio_uid() {
   return ppwd->pw_uid;
 }
 
+int fork_zero_fucks() {
+    int pid = fork();
+    if (pid) {
+        int status;
+        waitpid(pid, &status, 0);
+        return pid;
+    }
+    else {
+        if (pid = fork())
+            exit(0);
+        return 0;
+    }
+}
+
 void exec_log(char *priority, char* logline) {
   int pid;
   if ((pid = fork()) == 0) {
-      int zero = open("/dev/zero", O_RDONLY | O_CLOEXEC);
       int null = open("/dev/null", O_WRONLY | O_CLOEXEC);
-      dup2(null, 0);
-      dup2(null, 1);
-      dup2(null, 2);
+      dup2(null, STDIN_FILENO);
+      dup2(null, STDOUT_FILENO);
+      dup2(null, STDERR_FILENO);
       execl("/system/bin/log", "/system/bin/log", "-p", priority, "-t", LOG_TAG, logline, NULL);
       _exit(0);
   }
+  int status;
+  waitpid(pid, &status, 0);
 }
 
 void exec_loge(const char* fmt, ...) {
@@ -590,13 +605,24 @@ int access_disabled(const struct su_initiator *from) {
     return 0;
 }
 
+static int is_api_18() {
+  char sdk_ver[PROPERTY_VALUE_MAX];
+  char *data = read_file("/system/build.prop");
+  get_property(data, sdk_ver, "ro.build.version.sdk", "0");
+  int ver = atoi(sdk_ver);
+  free(data);
+  return ver >= 18;
+}
+
 int main(int argc, char *argv[]) {
     // start up in daemon mode if prompted
     if (argc == 2 && strcmp(argv[1], "--daemon") == 0) {
         return run_daemon();
     }
 
-    if (geteuid() != AID_ROOT && getuid() != AID_ROOT) {
+    // attempt to use the daemon client if not root,
+    // or this is api 18 and adb shell (/data is not readable even as root)
+    if ((geteuid() != AID_ROOT && getuid() != AID_ROOT) || (is_api_18() && getuid() == AID_SHELL)) {
         // attempt to connect to daemon...
         LOGD("starting daemon client %d %d", getuid(), geteuid());
         return connect_daemon(argc, argv);

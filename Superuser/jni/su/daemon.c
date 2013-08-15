@@ -45,7 +45,7 @@ int daemon_from_pid = 0;
 static int read_int(int fd) {
     int val;
     int len = read(fd, &val, sizeof(int));
-    if (len < sizeof(int)) {
+    if (len != sizeof(int)) {
         LOGE("unable to read int");
         exit(-1);
     }
@@ -62,11 +62,15 @@ static void write_int(int fd, int val) {
 
 static char* read_string(int fd) {
     int len = read_int(fd);
-    if (len > PATH_MAX) {
-        LOGE("string too long");
+    if (len > PATH_MAX || len < 0) {
+        LOGE("invalid string length %d", len);
         exit(-1);
     }
     char* val = malloc(sizeof(char) * (len + 1));
+    if (val == NULL) {
+        LOGE("unable to malloc string");
+        exit(-1);
+    }
     val[len] = '\0';
     int amount = read(fd, val, len);
     if (amount != len) {
@@ -131,6 +135,10 @@ static void* pump_thread(void* data) {
 static void pump_async(int input, int output) {
     pthread_t writer;
     int* files = (int*)malloc(sizeof(int) * 2);
+    if (files == NULL) {
+        LOGE("unable to pump_async");
+        exit(-1);
+    }
     files[0] = input;
     files[1] = output;
     pthread_create(&writer, NULL, pump_thread, files);
@@ -146,7 +154,27 @@ static int daemon_accept(int fd) {
     LOGD("remote uid: %d", daemon_from_uid);
     daemon_from_pid = read_int(fd);
     LOGD("remote req pid: %d", daemon_from_pid);
+
+    struct ucred credentials;
+    int ucred_length = sizeof(struct ucred);
+    /* fill in the user data structure */
+    if(getsockopt(fd, SOL_SOCKET, SO_PEERCRED, &credentials, &ucred_length)) {
+        LOGE("could obtain credentials from unix domain socket");
+        exit(-1);
+    }
+    // if the credentials on the other side of the wire are NOT root,
+    // we can't trust anything being sent.
+    if (credentials.uid != 0) {
+        daemon_from_uid = credentials.uid;
+        pid = credentials.pid;
+        daemon_from_pid = credentials.pid;
+    }
+
     int argc = read_int(fd);
+    if (argc < 0 || argc > 512) {
+        LOGE("unable to allocate args: %d", argc);
+        exit(-1);
+    }
     LOGD("remote args: %d", argc);
     char** argv = (char**)malloc(sizeof(char*) * (argc + 1));
     argv[argc] = NULL;
@@ -178,6 +206,9 @@ static int daemon_accept(int fd) {
     chown(outfile, daemon_from_uid, 0);
     chown(infile, daemon_from_uid, 0);
     chown(errfile, daemon_from_uid, 0);
+    chmod(outfile, 0660);
+    chmod(infile, 0660);
+    chmod(errfile, 0660);
 
     // ack
     write_int(fd, 1);
@@ -200,17 +231,17 @@ static int daemon_accept(int fd) {
 
     int outfd = open(outfile, O_WRONLY);
     if (outfd <= 0) {
-        PLOGE("outfd");
+        PLOGE("outfd daemon %s", outfile);
         goto done;
     }
     int errfd = open(errfile, O_WRONLY);
     if (errfd <= 0) {
-        PLOGE("errfd");
+        PLOGE("errfd daemon %s", errfile);
         goto done;
     }
     int infd = open(infile, O_RDONLY);
     if (infd <= 0) {
-        PLOGE("infd");
+        PLOGE("infd daemon %s", infile);
         goto done;
     }
 
@@ -287,11 +318,11 @@ static int daemon_accept(int fd) {
 done:
     write(fd, &code, sizeof(int));
     close(fd);
+    LOGD("child exited");
     return code;
 }
 
 int run_daemon() {
-    LOGD("starting su daemon");
     int fd;
     struct sockaddr_un sun;
 
@@ -299,6 +330,10 @@ int run_daemon() {
     if (fd < 0) {
         PLOGE("socket");
         return -1;
+    }
+    if (fcntl(fd, F_SETFD, FD_CLOEXEC)) {
+        PLOGE("fcntl FD_CLOEXEC");
+        goto err;
     }
 
     memset(&sun, 0, sizeof(sun));
@@ -333,9 +368,7 @@ int run_daemon() {
 
     int client;
     while ((client = accept(fd, NULL, NULL)) > 0) {
-        // dup/close?
-        LOGD("got client");
-        if (fork() == 0) {
+        if (fork_zero_fucks() == 0) {
             close(fd);
             return daemon_accept(client);
         }
@@ -369,6 +402,10 @@ int connect_daemon(int argc, char *argv[]) {
         PLOGE("socket");
         exit(-1);
     }
+    if (fcntl(socketfd, F_SETFD, FD_CLOEXEC)) {
+        PLOGE("fcntl FD_CLOEXEC");
+        exit(-1);
+    }
 
     memset(&sun, 0, sizeof(sun));
     sun.sun_family = AF_LOCAL;
@@ -396,17 +433,17 @@ int connect_daemon(int argc, char *argv[]) {
 
     int outfd = open(outfile, O_RDONLY);
     if (outfd <= 0) {
-        PLOGE("outfd");
+        PLOGE("outfd %s ", outfile);
         exit(-1);
     }
     int errfd = open(errfile, O_RDONLY);
     if (errfd <= 0) {
-        PLOGE("errfd");
+        PLOGE("errfd %s", errfile);
         exit(-1);
     }
     int infd = open(infile, O_WRONLY);
     if (infd <= 0) {
-        PLOGE("infd");
+        PLOGE("infd %s", infile);
         exit(-1);
     }
 
